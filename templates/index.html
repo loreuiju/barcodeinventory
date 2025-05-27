@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Inventario con Escaneo</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; }
+  #container { display: flex; flex-direction: column; align-items: center; max-width: 600px;margin: auto; height: 20%; }
+  #video-container { position: relative; width: 100%; max-width: 400px; }
+  #interactive.viewport {
+    width: 50%;
+  }
+  canvas.drawingBuffer {
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+  #form-cantidad {
+    margin-top: 3px;
+    width: 100%;
+    display: none;
+    gap: 10px;
+    align-items: center;
+}
+  td.cantidad.entrada {
+  color: green;
+  font-weight: bold;
+}
+  td.cantidad.salida {
+  color: red;
+  font-weight: bold;
+}
+
+  #form-cantidad input[type="number"] {
+    width: 80px;
+    padding: 5px;
+    font-size: 16px;
+  }
+  #form-cantidad button {
+    padding: 6px 12px;
+    font-size: 16px;
+  }
+  table {
+    margin-top: 30px;
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14px;
+  }
+  table, th, td { border: 1px solid #ddd; }
+  th, td { padding: 8px; text-align: left; }
+  th { background-color: #f2f2f2; }
+</style>
+</head>
+<body>
+<div id="container">
+  <h2>Escanear código de barras</h2>
+  <div id="video-container">
+    <div id="interactive" class="viewport"></div>
+    <div id="manual-container" style="margin-top: 20px;">
+      <label for="manual-codigo">Código de barras manual:</label>
+      <input type="text" id="manual-codigo" placeholder="Introduce código manualmente" />
+      <button id="boton-manual">Añadir producto</button>
+    </div>
+    
+  </div>
+
+  <form id="form-cantidad">
+    <label for="cantidad">Cantidad:</label>
+    <input type="number" id="cantidad" min="1" value="1" required />
+  
+    <label for="tipo">Tipo:</label>
+    <select id="tipo" required>
+      <option value="entrada" selected>Entrada</option>
+      <option value="salida">Salida</option>
+    </select>
+  
+    <button type="submit">Guardar</button>
+  </form>  
+
+  <div id="mensaje" style="margin-top: 10px; color: green;"></div>
+  <button id="boton-nuevo" style="margin-top: 10px; display: none;">Escanear otro producto</button>
+
+
+  <h3>Inventario</h3>
+  <div style="margin-bottom: 15px;">
+    <button id="btnExportCsv">Exportar CSV</button>
+    <button id="btnExportExcel">Exportar Excel</button>
+    <button id="btnExportDeleteCsv">Exportar CSV y borrar</button>
+    <button id="btnExportDeleteExcel">Exportar Excel y borrar</button>
+  </div>  
+  <table>
+    <thead>
+      <tr>
+        <th>Fecha y hora</th><th>Cantidad</th><th>Código único</th><th>Código barras</th><th>Nombre</th><th>Tamaño</th><th>Marca</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for fila in inventario %}
+      <tr>
+        <td>{{ fila[1] }}</td>
+        <td class="cantidad {% if fila[2] > 0 %}entrada{% else %}salida{% endif %}">
+          {{ fila[2] }}
+        </td>        
+        <td>{{ fila[3] }}</td>
+        <td>{{ fila[4] }}</td>
+        <td>{{ fila[5] }}</td>
+        <td>{{ fila[6] }}</td>
+        <td>{{ fila[7] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+</table>
+
+</div>
+
+<script src="https://unpkg.com/quagga/dist/quagga.min.js"></script>
+<script>
+let ultimoCodigo = null;
+let contadorMismoCodigo = 0;
+const UMBRAL_CONFIRMACION = 2; // Lecturas iguales necesarias para confirmar
+
+const formCantidad = document.getElementById('form-cantidad');
+const cantidadInput = document.getElementById('cantidad');
+const mensajeDiv = document.getElementById('mensaje');
+
+// Nuevo botón para escanear otro producto
+const botonNuevo = document.createElement('button');
+botonNuevo.textContent = 'Escanear otro producto';
+botonNuevo.style.display = 'none';
+botonNuevo.style.marginTop = '10px';
+botonNuevo.style.padding = '6px 12px';
+botonNuevo.style.fontSize = '16px';
+document.getElementById('container').appendChild(botonNuevo);
+
+botonNuevo.addEventListener('click', () => {
+  mensajeDiv.textContent = '';
+  formCantidad.style.display = 'none';
+  ultimoCodigo = null;
+  contadorMismoCodigo = 0;
+  botonNuevo.style.display = 'none';
+  iniciarScanner();
+});
+
+// Caja para introducir manualmente el código de barras
+const manualContainer = document.createElement('div');
+manualContainer.style.marginTop = '20px';
+
+manualContainer.innerHTML = `
+  <label for="manual-codigo">Código de barras manual:</label>
+  <input type="text" id="manual-codigo" placeholder="Introduce código manualmente" />
+  <button id="boton-manual" style="margin-left: 10px; padding: 6px 12px; font-size: 16px;">Añadir producto</button>
+`;
+
+document.getElementById('container').appendChild(manualContainer);
+
+const manualInput = document.getElementById('manual-codigo');
+const botonManual = document.getElementById('boton-manual');
+
+botonManual.addEventListener('click', () => {
+  const codigoManual = manualInput.value.trim();
+  if (!codigoManual) {
+    alert('Por favor, introduce un código válido');
+    return;
+  }
+  Quagga.stop();
+  mostrarFormulario(codigoManual);
+  manualInput.value = '';
+});
+
+function iniciarScanner() {
+  Quagga.init({
+    inputStream: {
+      name: "Live",
+      type: "LiveStream",
+      target: document.querySelector('#interactive'),
+      constraints: {
+        facingMode: "environment"
+      }
+    },
+    decoder: {
+      readers: ["ean_reader", "code_128_reader", "upc_reader"],
+      multiple: false
+    },
+    locator: {
+      patchSize: "medium",
+      halfSample: false
+    },
+    frequency: 2
+  }, function(err) {
+    if (err) {
+      console.error(err);
+      return;
+    }
+    Quagga.start();
+  });
+
+  Quagga.onDetected(resultado => {
+    const codigo = resultado.codeResult.code;
+    if (codigo === ultimoCodigo) {
+      contadorMismoCodigo++;
+    } else {
+      ultimoCodigo = codigo;
+      contadorMismoCodigo = 1;
+    }
+
+    if (contadorMismoCodigo >= UMBRAL_CONFIRMACION) {
+      Quagga.stop();
+      mostrarFormulario(codigo);
+    }
+  });
+}
+
+function mostrarFormulario(codigo) {
+  mensajeDiv.style.color = 'green';
+  mensajeDiv.textContent = `Código leído: ${codigo}`;
+  formCantidad.style.display = 'flex';
+  cantidadInput.value = 1;
+  cantidadInput.focus();
+  botonNuevo.style.display = 'inline-block';
+  formCantidad.dataset.codigo = codigo;
+}
+
+formCantidad.addEventListener('submit', e => {
+  e.preventDefault();
+  const codigo = formCantidad.dataset.codigo;
+  const cantidad = parseInt(cantidadInput.value);
+const tipo = document.getElementById('tipo').value;
+const cantidadFinal = tipo === 'salida' ? -cantidad : cantidad;
+
+fetch('/guardar', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ codigo_barras: codigo, cantidad: cantidadFinal })
+})
+
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      mensajeDiv.style.color = 'red';
+      mensajeDiv.textContent = data.error;
+    } else {
+      mensajeDiv.style.color = 'green';
+      mensajeDiv.textContent = data.mensaje;
+      formCantidad.style.display = 'none';
+      ultimoCodigo = null;
+      contadorMismoCodigo = 0;
+      botonNuevo.style.display = 'inline-block';
+      // No reiniciamos scanner aquí para que el usuario decida
+    }
+  })
+  .catch(err => {
+    mensajeDiv.style.color = 'red';
+    mensajeDiv.textContent = 'Error al guardar el producto';
+    console.error(err);
+  });
+});
+document.getElementById('btnExportCsv').addEventListener('click', () => {
+  window.location.href = '/exportar/csv';
+});
+
+document.getElementById('btnExportExcel').addEventListener('click', () => {
+  window.location.href = '/exportar/excel';
+});
+async function exportar(formato) {
+  try {
+    window.location.href = `/exportar/${formato}`;
+  } catch (error) {
+    alert('Error al exportar: ' + error.message);
+  }
+}
+
+async function exportarYborrar(formato) {
+  if (!confirm('¿Seguro que quieres exportar y borrar TODOS los registros? Esta acción no se puede deshacer.')) {
+    return;
+  }
+  try {
+    const response = await fetch(`/exportar_y_borrar/${formato}`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error('Error en la exportación');
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = formato === 'csv' ? 'inventario.csv' : 'inventario.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+
+    // Recarga la página para actualizar la tabla tras borrar
+    setTimeout(() => location.reload(), 500);
+  } catch (error) {
+    alert('Error al exportar y borrar: ' + error.message);
+  }
+}
+
+document.getElementById('btnExportCsv').addEventListener('click', () => exportar('csv'));
+document.getElementById('btnExportExcel').addEventListener('click', () => exportar('excel'));
+document.getElementById('btnExportDeleteCsv').addEventListener('click', () => exportarYborrar('csv'));
+document.getElementById('btnExportDeleteExcel').addEventListener('click', () => exportarYborrar('excel'));
+
+iniciarScanner();
+</script>
+</body>
+</html>
